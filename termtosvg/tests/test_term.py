@@ -3,9 +3,11 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pyte
+
 import termtosvg.anim as anim
 from termtosvg import term
-from termtosvg.asciicast import AsciiCastV2Header, AsciiCastV2Event, AsciiCastV2Theme
+from termtosvg.asciicast import AsciiCastV2Event, AsciiCastV2Header, AsciiCastV2Theme
 
 commands = [
     'echo $SHELL && sleep 0.1;\r\n',
@@ -22,6 +24,8 @@ commands = [
 
 
 class TestTerm(unittest.TestCase):
+    maxDiff = None
+
     def test__record(self):
         # Use pipes in lieu of stdin and stdout
         fd_in_read, fd_in_write = os.pipe()
@@ -72,75 +76,119 @@ class TestTerm(unittest.TestCase):
         for fd in fd_in_read, fd_in_write, fd_out_read, fd_out_write:
             os.close(fd)
 
-    def test_replay(self):
+    def test_TerminalSession__buffer(self):
+        records = [AsciiCastV2Event(time=i,
+                                    event_type='o',
+                                    event_data='{}\r\n'.format(i).encode('utf-8'),
+                                    duration=None)
+                   for i in range(1, 5)]
+
+        screen = pyte.Screen(80, 24)
+        stream = pyte.ByteStream(screen)
+        last_cursor = None
+        for count, record in enumerate(records):
+            with self.subTest(case='Simple events (record #{})'.format(count)):
+                stream.feed(record.event_data)
+                buffer, last_cursor = term.TerminalSession._buffer(screen,
+                                                                   last_cursor)
+                screen.dirty.clear()
+
+                self.assertEqual(len(buffer), 2)
+                # text from event data
+                self.assertEqual(len(buffer[count]), 1)
+                self.assertEqual(buffer[count][0].text, str(count+1))
+                # cursor
+                self.assertEqual(len(buffer[count+1]), 1)
+                self.assertEqual(buffer[count+1][0].text, ' ')
+
+    def test_TerminalSession__feed(self):
+        records = [AsciiCastV2Event(time=i*1000,
+                                    event_type='o',
+                                    event_data='{}\r\n'.format(i).encode('utf-8'),
+                                    duration=1)
+                   for i in range(1, 3)]
+
+        cursor_char = anim.CharacterCell(' ',
+                                         color='background',
+                                         background_color='foreground')
+        expected_events = [
+            term.TerminalSession.DisplayLine(0, {0: anim.CharacterCell('1')}, 0),
+            term.TerminalSession.DisplayLine(1, {0: cursor_char}, 0),
+            term.TerminalSession.DisplayLine(1, {0: cursor_char}, 0, 1000),
+            term.TerminalSession.DisplayLine(1, {0: anim.CharacterCell('2')}, 1000),
+            term.TerminalSession.DisplayLine(2, {0: cursor_char}, 1000),
+        ]
+
+        screen = pyte.Screen(80, 24)
+        stream = pyte.ByteStream(screen)
+        last_cursor = None
+        display_events = {}
+        time = 0
+
+        events = []
+        for record in records:
+            stream.feed(record.event_data)
+            last_cursor, display_events, record_events = term.TerminalSession._feed(
+                screen, last_cursor, display_events, time
+            )
+
+            events.extend(record_events)
+            screen.dirty.clear()
+            time += int(1000 * record.duration)
+
+        self.assertEqual(expected_events, events)
+
+    def test_TerminalSession_line_events(self):
+        cursor_char = anim.CharacterCell(' ', 'background', 'foreground')
         theme = AsciiCastV2Theme('#000000', '#FFFFFF', ':'.join(['#123456'] * 16))
 
-        with self.subTest(case='One shell command per event'):
-            nbr_records = 5
-
+        with self.subTest(case='Simple events'):
             records = [AsciiCastV2Header(version=2, width=80, height=24, theme=theme)] + \
                       [AsciiCastV2Event(time=i,
                                         event_type='o',
                                         event_data='{}\r\n'.format(i).encode('utf-8'),
-                                        duration=None)
-                       for i in range(1, nbr_records)]
+                                        duration=1)
+                       for i in range(0, 2)]
+            session = term.TerminalSession(records)
+            events = list(session.line_events(1, None, 42))
+            expected_events = [
+                session.Configuration(80, 24),
+                session.DisplayLine(0, {0: anim.CharacterCell('0')}, 0),
+                session.DisplayLine(1, {0: cursor_char}, 0),
+                session.DisplayLine(1, {0: cursor_char}, 0, 1000),
+                session.DisplayLine(1, {0: anim.CharacterCell('1')}, 1000),
+                session.DisplayLine(2, {0: cursor_char}, 1000),
+                session.DisplayLine(0, {0: anim.CharacterCell('0')}, 0, 1042),
+                session.DisplayLine(1, {0: anim.CharacterCell('1')}, 1000, 42),
+                session.DisplayLine(2, {0: cursor_char}, 1000, 42),
+            ]
 
-            records = term.replay(records, lambda x: x.data, 5000, None, 1000)
-            # Last blank line is the cursor
-            lines = [str(i) for i in range(nbr_records)] + [' ']
-            for i, record in enumerate(records):
-                # Skip header and cursor line
-                if i != 0:
-                    self.assertEqual(record.line[0], lines[i])
+            self.assertEqual(expected_events, events)
 
-        with self.subTest(case='Shell command spread over multiple lines'):
-            records = [AsciiCastV2Header(version=2, width=80, height=24, theme=theme)] + \
-                      [AsciiCastV2Event(time=i * 60,
-                                        event_type='o',
-                                        event_data=data.encode('utf-8'),
-                                        duration=None)
-                       for i, data in enumerate(commands)]
-
-            screen = {}
-            for record in term.replay(records, lambda x: x.data, 50, None, 1000):
-                if hasattr(record, 'line'):
-                    screen[record.row] = ''.join(record.line[i] for i in sorted(record.line))
-
-            cmds = [cmd for cmd in ''.join(commands).split('\r\n') if cmd]
-            cursor = [' ']
-            expected_screen = dict(enumerate(cmds + cursor))
-            self.assertEqual(expected_screen, screen)
-
+        # Test #2: Hidden cursor
         with self.subTest(case='Hidden cursor'):
-            # '\u001b[?25h' : display cursor
-            # '\u001b[?25l' : hide cursor
-            records = [AsciiCastV2Header(version=2, width=80, height=24, theme=theme)] + \
-                      [
-                          AsciiCastV2Event(0, 'o', '\u001b[?25haaaa'.encode('utf-8'), None),
-                          AsciiCastV2Event(100, 'o', '\r\n\u001b[?25lbbbb'.encode('utf-8'), None),
-                          AsciiCastV2Event(200, 'o', '\r\n\u001b[?25hcccc'.encode('utf-8'), None),
-                      ]
-
-            gen = term.replay(records, anim.CharacterCell.from_pyte, 50, None, 1000)
-            header, *events = list(gen)
-
-            # Event #0: First line - cursor displayed after 'aaaa'
-            self.assertEqual(events[0].row, 0)
-            self.assertEqual(events[0].line[4].color, 'background')
-            self.assertEqual(events[0].line[4].background_color, 'foreground')
-
-            # Event #1: First line - cursor removed at position 4
-            self.assertEqual(events[1].row, 0)
-            self.assertNotIn(4, events[1].line)
-
-            # Event #2: Second line - cursor hidden
-            self.assertEqual(events[2].row, 1)
-            self.assertNotIn(4, events[2].line)
-
-            # Event #3: Third line - cursor displayed after 'cccc'
-            self.assertEqual(events[3].row, 2)
-            self.assertEqual(events[3].line[4].color, 'background')
-            self.assertEqual(events[3].line[4].background_color, 'foreground')
+            #   '\u001b[?25h' : display cursor
+            #   '\u001b[?25l' : hide cursor
+            records = [
+                AsciiCastV2Header(version=2, width=80, height=24, theme=theme),
+                AsciiCastV2Event(0, 'o', '\u001b[?25ha'.encode('utf-8'), 1),
+                AsciiCastV2Event(1, 'o', '\r\n\u001b[?25lb'.encode('utf-8'), 1),
+                AsciiCastV2Event(2, 'o', '\r\n\u001b[?25hc'.encode('utf-8'), 1),
+            ]
+            session = term.TerminalSession(records)
+            events = list(session.line_events(1, None, 42))
+            expected_events = [
+                session.Configuration(80, 24),
+                session.DisplayLine(0, {0: anim.CharacterCell('a'), 1: cursor_char}, 0),
+                session.DisplayLine(0, {0: anim.CharacterCell('a'), 1: cursor_char}, 0, 1000),
+                session.DisplayLine(0, {0: anim.CharacterCell('a')}, 1000),
+                session.DisplayLine(1, {0: anim.CharacterCell('b')}, 1000),
+                session.DisplayLine(2, {0: anim.CharacterCell('c'), 1: cursor_char}, 2000),
+                session.DisplayLine(0, {0: anim.CharacterCell('a')}, 1000, 1042),
+                session.DisplayLine(1, {0: anim.CharacterCell('b')}, 1000, 1042),
+                session.DisplayLine(2, {0: anim.CharacterCell('c'), 1: cursor_char}, 2000, 42),
+            ]
+            self.assertEqual(expected_events, events)
 
     def test_get_terminal_size(self):
         with self.subTest(case='Successful get_terminal_size call'):

@@ -186,10 +186,8 @@ def render_subcommand(still, template, cast_filename, output_path, min_frame_dur
 
     logger.info('Rendering started')
     asciicast_records = termtosvg.asciicast.read_records(cast_filename)
-    replayed_records = termtosvg.term.replay(records=asciicast_records,
-                                             from_pyte_char=termtosvg.anim.CharacterCell.from_pyte,
-                                             min_frame_duration=min_frame_duration,
-                                             max_frame_duration=max_frame_duration)
+    session = termtosvg.term.TerminalSession(asciicast_records)
+    replayed_records = session.line_events(min_frame_duration, max_frame_duration)
     if still:
         termtosvg.anim.render_still_frames(records=replayed_records,
                                            directory=output_path,
@@ -213,12 +211,12 @@ def record_render_subcommand(process_args, still, template, geometry, input_file
     else:
         columns, lines = geometry
     with termtosvg.term.TerminalMode(input_fileno):
-        asciicast_records = termtosvg.term.record(process_args, columns, lines, input_fileno,
-                                                  output_fileno)
-        replayed_records = termtosvg.term.replay(records=asciicast_records,
-                                                 from_pyte_char=termtosvg.anim.CharacterCell.from_pyte,
-                                                 min_frame_duration=min_frame_duration,
-                                                 max_frame_duration=max_frame_duration)
+        session = termtosvg.term.TerminalSession.from_process(process_args,
+                                                              columns, lines,
+                                                              input_fileno,
+                                                              output_fileno)
+        replayed_records = session.line_events(min_frame_duration,
+                                               max_frame_duration)
 
         if still:
             termtosvg.anim.render_still_frames(records=replayed_records,

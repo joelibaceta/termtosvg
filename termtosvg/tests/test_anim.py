@@ -8,6 +8,7 @@ import pyte.screens
 from lxml import etree
 
 from termtosvg import anim
+from termtosvg import term
 
 
 def line(i):
@@ -166,12 +167,12 @@ class TestAnim(unittest.TestCase):
 
     def test_make_animated_group(self):
         records = [
-            anim.CharacterCellLineEvent(1, line(1), None, None),
-            anim.CharacterCellLineEvent(2, line(2), None, None),
-            anim.CharacterCellLineEvent(3, line(3), None, None),
-            anim.CharacterCellLineEvent(4, line(4), None, None),
+            term.TerminalSession.DisplayLine(1, line(1), None, None),
+            term.TerminalSession.DisplayLine(2, line(2), None, None),
+            term.TerminalSession.DisplayLine(3, line(3), None, None),
+            term.TerminalSession.DisplayLine(4, line(4), None, None),
             # Definition reuse
-            anim.CharacterCellLineEvent(5, line(4), None, None),
+            term.TerminalSession.DisplayLine(5, line(4), None, None),
         ]
 
         for time, duration in [(10, 1), (None, None)]:
@@ -184,15 +185,15 @@ class TestAnim(unittest.TestCase):
 
     def test_render_animation(self):
         records = [
-            anim.CharacterCellConfig(80, 24),
-            anim.CharacterCellLineEvent(1, line(1), 0, 60),
-            anim.CharacterCellLineEvent(2, line(2), 60, 60),
-            anim.CharacterCellLineEvent(3, line(3), 120, 60),
-            anim.CharacterCellLineEvent(4, line(4), 180, 60),
+            term.TerminalSession.Configuration(80, 24),
+            term.TerminalSession.DisplayLine(1, line(1), 0, 60),
+            term.TerminalSession.DisplayLine(2, line(2), 60, 60),
+            term.TerminalSession.DisplayLine(3, line(3), 120, 60),
+            term.TerminalSession.DisplayLine(4, line(4), 180, 60),
             # Definition reuse
-            anim.CharacterCellLineEvent(5, line(4), 240, 60),
+            term.TerminalSession.DisplayLine(5, line(4), 240, 60),
             # Override line for animation chaining
-            anim.CharacterCellLineEvent(5, line(6), 300, 60),
+            term.TerminalSession.DisplayLine(5, line(6), 300, 60),
         ]
         template = pkgutil.get_data('termtosvg', '/data/templates/progress_bar.svg')
         _, filename = tempfile.mkstemp(prefix='termtosvg_', suffix='.svg')
@@ -202,15 +203,15 @@ class TestAnim(unittest.TestCase):
 
     def test__render_still_frames(self):
         records = [
-            anim.CharacterCellConfig(80, 24),
-            anim.CharacterCellLineEvent(1, line(1), 0, 60),
-            anim.CharacterCellLineEvent(2, line(2), 60, 60),
-            anim.CharacterCellLineEvent(3, line(3), 120, 60),
-            anim.CharacterCellLineEvent(4, line(4), 180, 60),
+            term.TerminalSession.Configuration(80, 24),
+            term.TerminalSession.DisplayLine(1, line(1), 0, 60),
+            term.TerminalSession.DisplayLine(2, line(2), 60, 60),
+            term.TerminalSession.DisplayLine(3, line(3), 120, 60),
+            term.TerminalSession.DisplayLine(4, line(4), 180, 60),
             # Definition reuse
-            anim.CharacterCellLineEvent(5, line(4), 240, 60),
+            term.TerminalSession.DisplayLine(5, line(4), 240, 60),
             # Override line for animation chaining
-            anim.CharacterCellLineEvent(5, line(6), 300, 60),
+            term.TerminalSession.DisplayLine(5, line(6), 300, 60),
         ]
 
         template = pkgutil.get_data('termtosvg', '/data/templates/progress_bar.svg')
@@ -249,9 +250,3 @@ class TestAnim(unittest.TestCase):
         for bytes_svg in success_test_cases:
             with io.BytesIO(bytes_svg) as bstream:
                 anim.validate_svg(bstream)
-
-
-    def still(self):
-        data = pkgutil.get_data('termtosvg', '/data/termtosvg_feapnnnv.cast')
-        pass
-

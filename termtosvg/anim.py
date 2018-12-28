@@ -10,6 +10,8 @@ import pyte.graphics
 import pyte.screens
 from lxml import etree
 
+from termtosvg import term
+
 # Ugliest hack: Replace the first 16 colors rgb values by their names so that termtosvg can
 # distinguish FG_BG_256[0] (which defaults to black #000000 but can be styled with themes)
 # from FG_BG_256[16] (which is also black #000000 but should be displayed as is).
@@ -54,9 +56,8 @@ class TemplateError(Exception):
 
 _CharacterCell = namedtuple('_CharacterCell', ['text', 'color', 'background_color', 'bold',
                                                'italics', 'underscore', 'strikethrough'])
-# Make Last four arguments of _CharacterCell constructor default to False (bold, italics,
-# underscore and strikethrough)
-_CharacterCell.__new__.__defaults__ = (False,) * 4
+# Set default values for last 6 arguments
+_CharacterCell.__new__.__defaults__ = ('foreground', 'background', False, False, False, False)
 _CharacterCell.__doc__ = 'Representation of a character cell'
 _CharacterCell.text.__doc__ = 'Text content of the cell'
 _CharacterCell.bold.__doc__ = 'Bold modificator flag'
@@ -109,10 +110,6 @@ class CharacterCell(_CharacterCell):
                              char.strikethrough)
 
 
-CharacterCellConfig = namedtuple('CharacterCellConfig', ['width', 'height'])
-CharacterCellLineEvent = namedtuple('CharacterCellLineEvent', ['row', 'line', 'time', 'duration'])
-
-
 class ConsecutiveWithSameAttributes:
     """Callable to be used as a key for itertools.groupby to group together consecutive elements
     of a list with the same attributes"""
@@ -156,7 +153,7 @@ def _render_preparation(records, template, cell_width, cell_height):
     if not isinstance(records, Iterator):
         records = iter(records)
     header = next(records)
-    assert isinstance(header, CharacterCellConfig)
+    assert isinstance(header, term.TerminalSession.Configuration)
 
     root = resize_template(template, header.width, header.height, cell_width, cell_height)
 
@@ -169,7 +166,8 @@ def _render_preparation(records, template, cell_width, cell_height):
 
     svg_screen_tag.append(BG_RECT_TAG)
 
-    grouped_records = groupby(records, key=lambda r: (r.time, r.duration))
+    records_with_duration = filter(lambda r: r.duration is not None, records)
+    grouped_records = groupby(records_with_duration, key=lambda r: (r.time, r.duration))
 
     return grouped_records, root
 
@@ -178,6 +176,7 @@ def _render_still_frames(grouped_records, root, cell_width, cell_height):
     screen = {}
     for (line_time, line_duration), record_group in grouped_records:
         for record in record_group:
+            assert isinstance(record, term.TerminalSession.DisplayLine)
             screen[record.row] = record
 
         screen = {row: record for row, record in screen.items()
@@ -288,7 +287,7 @@ def _make_frame_group(records, time, duration, cell_height, cell_width, definiti
 
 
 def _render_line_event(record, cell_height, cell_width, definitions):
-    assert isinstance(record, CharacterCellLineEvent)
+    assert isinstance(record, term.TerminalSession.DisplayLine)
 
     tags = _render_line_bg_colors(screen_line=record.line,
                                   height=record.row * cell_height,
