@@ -1,4 +1,5 @@
 import io
+import itertools
 import pkgutil
 import tempfile
 import unittest
@@ -9,6 +10,9 @@ from lxml import etree
 
 from termtosvg import anim
 from termtosvg import term
+
+
+TEMPLATE = pkgutil.get_data('termtosvg', '/data/templates/gjm8.svg')
 
 
 def line(i):
@@ -167,12 +171,12 @@ class TestAnim(unittest.TestCase):
 
     def test_make_animated_group(self):
         records = [
-            term.TerminalSession.DisplayLine(1, line(1), None, None),
-            term.TerminalSession.DisplayLine(2, line(2), None, None),
-            term.TerminalSession.DisplayLine(3, line(3), None, None),
-            term.TerminalSession.DisplayLine(4, line(4), None, None),
+            term.DisplayLine(1, line(1), None, None),
+            term.DisplayLine(2, line(2), None, None),
+            term.DisplayLine(3, line(3), None, None),
+            term.DisplayLine(4, line(4), None, None),
             # Definition reuse
-            term.TerminalSession.DisplayLine(5, line(4), None, None),
+            term.DisplayLine(5, line(4), None, None),
         ]
 
         for time, duration in [(10, 1), (None, None)]:
@@ -185,48 +189,73 @@ class TestAnim(unittest.TestCase):
 
     def test_render_animation(self):
         records = [
-            term.TerminalSession.Configuration(80, 24),
-            term.TerminalSession.DisplayLine(1, line(1), 0, 60),
-            term.TerminalSession.DisplayLine(2, line(2), 60, 60),
-            term.TerminalSession.DisplayLine(3, line(3), 120, 60),
-            term.TerminalSession.DisplayLine(4, line(4), 180, 60),
-            # Definition reuse
-            term.TerminalSession.DisplayLine(5, line(4), 240, 60),
-            # Override line for animation chaining
-            term.TerminalSession.DisplayLine(5, line(6), 300, 60),
+            term.Configuration(80, 24),
+            [
+                term.DisplayLine(1, line(1), 0, None),
+            ],
+            [
+                term.DisplayLine(1, line(1), 0, 60),
+                term.DisplayLine(2, line(2), 60, None),
+            ],
+            [
+                term.DisplayLine(2, line(2), 60, 60),
+                term.DisplayLine(3, line(3), 120, None),
+            ],
         ]
-        template = pkgutil.get_data('termtosvg', '/data/templates/progress_bar.svg')
         _, filename = tempfile.mkstemp(prefix='termtosvg_', suffix='.svg')
-        anim.render_animation(records, filename, template)
+        anim.render_animation(records, filename, TEMPLATE)
         with open(filename) as f:
             anim.validate_svg(f)
 
     def test__render_still_frames(self):
+        def line(s):
+            return dict(enumerate([anim.CharacterCell(c) for c in s]))
+
         records = [
-            term.TerminalSession.Configuration(80, 24),
-            term.TerminalSession.DisplayLine(1, line(1), 0, 60),
-            term.TerminalSession.DisplayLine(2, line(2), 60, 60),
-            term.TerminalSession.DisplayLine(3, line(3), 120, 60),
-            term.TerminalSession.DisplayLine(4, line(4), 180, 60),
-            # Definition reuse
-            term.TerminalSession.DisplayLine(5, line(4), 240, 60),
-            # Override line for animation chaining
-            term.TerminalSession.DisplayLine(5, line(6), 300, 60),
+            term.Configuration(80, 24),
+            [
+                term.DisplayLine(1, line('a'), 0, None),
+                term.DisplayLine(2, line('b'), 0, None),
+            ],
+            [
+                term.DisplayLine(1, line('a'), 0, 120),
+                term.DisplayLine(3, line('c'), 120, None),
+                term.DisplayLine(4, line('d'), 120, None),
+            ],
+            [
+                term.DisplayLine(5, line('e'), 240, None),
+            ],
+            [
+                term.DisplayLine(5, line('e'), 240, 60),
+                term.DisplayLine(5, line('f'), 300, None),
+            ],
         ]
 
-        template = pkgutil.get_data('termtosvg', '/data/templates/progress_bar.svg')
-        grouped_records, root = anim._render_preparation(records, template, 9, 17)
+        grouped_records, root = anim._render_preparation(records, TEMPLATE, 9, 17)
         frame_generator = anim._render_still_frames(grouped_records, root, 9, 17)
 
-        for count, frame in enumerate(frame_generator):
+        def extract_text_content(frame):
+            svg_screen_elem = frame.find('.//{{{namespace}}}svg[@id="screen"]'
+                                         .format(namespace=anim.SVG_NS))
+            return {elem.text for elem in svg_screen_elem.findall('.//text')}
+
+        expected_texts_by_frame = [
+            {'a', 'b'},
+            {'b', 'c', 'd'},
+            {'b', 'c', 'd', 'e'},
+            {'b', 'c', 'd', 'f'},
+        ]
+
+        z = itertools.zip_longest(expected_texts_by_frame, frame_generator)
+        for count, (texts, frame) in enumerate(z):
             with self.subTest(case='Frame #{}'.format(count)):
                 anim.validate_svg(io.BytesIO(etree.tostring(frame)))
+                self.assertEqual(texts, extract_text_content(frame))
 
     def test__embed_css(self):
-        data = pkgutil.get_data('termtosvg', '/data/templates/progress_bar.svg')
         for animation_duration in [None, 42]:
             with self.subTest(case=animation_duration):
-                tree = etree.parse(io.BytesIO(data))
+                tree = etree.parse(io.BytesIO(TEMPLATE))
                 root = tree.getroot()
                 anim._embed_css(root, animation_duration)
                 assert b'{{' not in etree.tostring(root)
@@ -245,7 +274,7 @@ class TestAnim(unittest.TestCase):
                     anim.validate_svg(io.StringIO(case))
 
         success_test_cases = [
-            pkgutil.get_data('termtosvg', '/data/templates/gjm8.svg'),
+            TEMPLATE,
         ]
         for bytes_svg in success_test_cases:
             with io.BytesIO(bytes_svg) as bstream:

@@ -172,3 +172,4 @@ class TestMain(unittest.TestCase):
         for case in test_cases:
             with self.subTest(case=case):
                 self.assertEqual(termtosvg.main.integral_duration(case), 100)
+

@@ -1,6 +1,6 @@
 import copy
 import io
-import pathlib
+import os.path
 import pkgutil
 from collections import namedtuple
 from itertools import groupby
@@ -12,16 +12,17 @@ from lxml import etree
 
 from termtosvg import term
 
-# Ugliest hack: Replace the first 16 colors rgb values by their names so that termtosvg can
-# distinguish FG_BG_256[0] (which defaults to black #000000 but can be styled with themes)
-# from FG_BG_256[16] (which is also black #000000 but should be displayed as is).
+# Ugliest hack: Replace the first 16 colors rgb values by their names so that
+# termtosvg can distinguish FG_BG_256[0] (which defaults to black #000000 but
+# can be styled with themes) from FG_BG_256[16] (which is also black #000000
+# but should be displayed as is).
 _COLORS = ['black', 'red', 'green', 'brown', 'blue', 'magenta', 'cyan', 'white']
 _BRIGHTCOLORS = ['bright{}'.format(color) for color in _COLORS]
 NAMED_COLORS = _COLORS + _BRIGHTCOLORS
 pyte.graphics.FG_BG_256 = NAMED_COLORS + pyte.graphics.FG_BG_256[16:]
 
-# Id for the very last SVG animation. This is used to make the first animations start when the
-# last one ends (animation looping)
+# Id for the very last SVG animation. This is used to make the first animations
+# start when the last one ends (animation looping)
 LAST_ANIMATION_ID = 'anim_last'
 
 # Background rectangle SVG element
@@ -54,10 +55,12 @@ class TemplateError(Exception):
     pass
 
 
-_CharacterCell = namedtuple('_CharacterCell', ['text', 'color', 'background_color', 'bold',
-                                               'italics', 'underscore', 'strikethrough'])
+_CELL_ATTRIBUTES = ['text', 'color', 'background_color', 'bold', 'italics',
+                    'underscore', 'strikethrough']
+_CharacterCell = namedtuple('_CharacterCell', _CELL_ATTRIBUTES)
 # Set default values for last 6 arguments
-_CharacterCell.__new__.__defaults__ = ('foreground', 'background', False, False, False, False)
+_CharacterCell.__new__.__defaults__ = ('foreground', 'background', False, False,
+                                       False, False)
 _CharacterCell.__doc__ = 'Representation of a character cell'
 _CharacterCell.text.__doc__ = 'Text content of the cell'
 _CharacterCell.bold.__doc__ = 'Bold modificator flag'
@@ -111,8 +114,8 @@ class CharacterCell(_CharacterCell):
 
 
 class ConsecutiveWithSameAttributes:
-    """Callable to be used as a key for itertools.groupby to group together consecutive elements
-    of a list with the same attributes"""
+    """Callable to be used as a key for itertools.groupby to group together
+    consecutive elements of a list with the same attributes"""
     def __init__(self, attributes):
         self.group_index = None
         self.last_index = None
@@ -130,20 +133,29 @@ class ConsecutiveWithSameAttributes:
 
 
 def render_animation(records, filename, template, cell_width=CELL_WIDTH, cell_height=CELL_HEIGHT):
-    grouped_records, root = _render_preparation(records, template, cell_width, cell_height)
-    root = _render_animation(grouped_records, root, cell_width, cell_height)
+    def group_by_time(records):
+        def time_and_duration(record):
+            return record.time, record.duration
+        for record_group in records:
+            with_duration = [r for r in record_group if r.duration is not None]
+            sorted_group = sorted(with_duration, key=time_and_duration)
+            yield from groupby(sorted_group, key=time_and_duration)
+
+    event_records, root = _render_preparation(records, template, cell_width,
+                                              cell_height)
+
+    root = _render_animation(group_by_time(event_records), root, cell_width,
+                             cell_height)
     with open(filename, 'wb') as output_file:
         output_file.write(etree.tostring(root))
 
 
 def render_still_frames(records, directory, template, cell_width=CELL_WIDTH, cell_height=CELL_HEIGHT):
-    grouped_records, root = _render_preparation(records, template, cell_width, cell_height)
-    if not isinstance(directory, pathlib.PurePath):
-        directory = pathlib.Path(directory)
+    event_records, root = _render_preparation(records, template, cell_width, cell_height)
 
-    frame_generator = _render_still_frames(grouped_records, root, cell_width, cell_height)
+    frame_generator = _render_still_frames(event_records, root, cell_width, cell_height)
     for frame_count, frame_root in enumerate(frame_generator):
-        filename = directory / 'termtosvg_{:05}.svg'.format(frame_count)
+        filename = os.path.join(directory, 'termtosvg_{:05}.svg'.format(frame_count))
         with open(filename, 'wb') as output_file:
             output_file.write(etree.tostring(frame_root))
 
@@ -153,34 +165,33 @@ def _render_preparation(records, template, cell_width, cell_height):
     if not isinstance(records, Iterator):
         records = iter(records)
     header = next(records)
-    assert isinstance(header, term.TerminalSession.Configuration)
+    assert isinstance(header, term.Configuration)
 
     root = resize_template(template, header.width, header.height, cell_width, cell_height)
 
-    svg_screen_tag = root.find('.//{{{namespace}}}svg[@id="screen"]'.format(namespace=SVG_NS))
+    svg_screen_tag = root.find('.//{{{namespace}}}svg[@id="screen"]'
+                               .format(namespace=SVG_NS))
     if svg_screen_tag is None:
         raise ValueError('Missing tag: <svg id="screen" ...>...</svg>')
 
     for child in svg_screen_tag.getchildren():
         svg_screen_tag.remove(child)
-
     svg_screen_tag.append(BG_RECT_TAG)
 
-    records_with_duration = filter(lambda r: r.duration is not None, records)
-    grouped_records = groupby(records_with_duration, key=lambda r: (r.time, r.duration))
-
-    return grouped_records, root
+    return records, root
 
 
 def _render_still_frames(grouped_records, root, cell_width, cell_height):
     screen = {}
-    for (line_time, line_duration), record_group in grouped_records:
+    for record_group in grouped_records:
         for record in record_group:
-            assert isinstance(record, term.TerminalSession.DisplayLine)
-            screen[record.row] = record
+            assert isinstance(record, term.DisplayLine)
+            if record.duration is None:
+                assert record.row not in screen
+                screen[record.row] = record
+            else:
+                del screen[record.row]
 
-        screen = {row: record for row, record in screen.items()
-                  if record.time + record.duration >= line_time}
         frame_group, frame_definitions = _make_frame_group(records=screen.values(),
                                                            time=None,
                                                            duration=None,
@@ -202,7 +213,8 @@ def _render_still_frames(grouped_records, root, cell_width, cell_height):
 
 
 def _render_animation(grouped_records, root, cell_width, cell_height):
-    svg_screen_tag = root.find('.//{{{namespace}}}svg[@id="screen"]'.format(namespace=SVG_NS))
+    svg_screen_tag = root.find('.//{{{namespace}}}svg[@id="screen"]'
+                               .format(namespace=SVG_NS))
     if svg_screen_tag is None:
         raise ValueError('Missing tag: <svg id="screen" ...>...</svg>')
 
@@ -226,8 +238,8 @@ def _render_animation(grouped_records, root, cell_width, cell_height):
     for definition in definitions.values():
         tree_defs.append(definition)
 
-    # Add id attribute to the last 'animate' tag so that it can be referred to by the first
-    # animations (enables animation looping)
+    # Add id attribute to the last 'animate' tag so that it can be referred to
+    # by the first animations (enables animation looping)
     if last_animated_group is not None:
         animate_tags = last_animated_group.findall('animate')
         assert len(animate_tags) == 1
@@ -238,8 +250,9 @@ def _render_animation(grouped_records, root, cell_width, cell_height):
 
 
 def _make_frame_group(records, time, duration, cell_height, cell_width, definitions):
-    """Return a group element containing an SVG version of the provided records. This group is
-    animated, that is to say displayed then removed according to the timing arguments.
+    """Return a group element containing an SVG version of the provided records.
+    This group is animated, that is to say displayed then removed according to
+    the timing arguments.
 
     :param records: List of lines that should be included in the group
     :param time: Time the group should appear on the screen (milliseconds)
@@ -256,22 +269,26 @@ def _make_frame_group(records, time, duration, cell_height, cell_width, definiti
 
     group_definitions = {}
     for line_event in records:
-        tags, new_definitions = _render_line_event(record=line_event,
-                                                   cell_height=cell_height,
-                                                   cell_width=cell_width,
-                                                   definitions={**definitions, **group_definitions})
+        current_definitions = {**definitions, **group_definitions}
+        tags, new_definitions = _render_line_event(line_event,
+                                                   cell_height,
+                                                   cell_width,
+                                                   current_definitions)
         for tag in tags:
             frame_group_tag.append(tag)
         group_definitions.update(new_definitions)
 
-    # Finally, add an animation tag so that the whole group goes from 'display: none' to
-    # 'display: inline' at the time the line should appear on the screen
+    # Finally, add an animation tag so that the whole group goes from
+    # 'display: none' to 'display: inline' at the time the line should
+    # appear on the screen
     if time is not None:
         if time == 0:
-            # Animations starting at 0ms should also start when the last animation ends (looping)
+            # Animations starting at 0ms should also start when the last
+            # animation ends (looping)
             begin_time = '0ms; {id}.end'.format(id=LAST_ANIMATION_ID)
         else:
-            begin_time = '{time}ms; {id}.end+{time}ms'.format(time=time, id=LAST_ANIMATION_ID)
+            begin_time = ('{time}ms; {id}.end+{time}ms'
+                          .format(time=time, id=LAST_ANIMATION_ID))
         attributes = {
             'attributeName': 'display',
             'from': 'inline',
@@ -287,7 +304,7 @@ def _make_frame_group(records, time, duration, cell_height, cell_width, definiti
 
 
 def _render_line_event(record, cell_height, cell_width, definitions):
-    assert isinstance(record, term.TerminalSession.DisplayLine)
+    assert isinstance(record, term.DisplayLine)
 
     tags = _render_line_bg_colors(screen_line=record.line,
                                   height=record.row * cell_height,
@@ -306,14 +323,14 @@ def _render_line_event(record, cell_height, cell_width, definitions):
         group_id = definitions[text_group_tag_str].attrib['id']
         new_definitions = {}
     else:
-        group_id = 'g{}'.format(len(definitions) + + 1)
+        group_id = 'g{}'.format(len(definitions) + 1)
         assert group_id not in definitions.values()
         text_group_tag.attrib['id'] = group_id
         new_definitions = {text_group_tag_str: text_group_tag}
 
     # Add a reference to the definition of text_group_tag with a 'use' tag
     use_attributes = {
-        '{{{namespace}}}href'.format(namespace=XLINK_NS): '#{_id}'.format(_id=group_id),
+        '{{{}}}href'.format(XLINK_NS): '#{}'.format(group_id),
         'y': str(record.row * cell_height),
     }
     tags.append(etree.Element('use', use_attributes))
@@ -340,17 +357,18 @@ def _make_rect_tag(column, length, height, cell_width, cell_height, background_c
 def _render_line_bg_colors(screen_line, height, cell_height, cell_width):
     """Return a list of 'rect' tags representing the background of 'screen_line'
 
-    If consecutive cells have the same background color, a single 'rect' tag is returned for all
-    these cells.
-    If a cell background uses default_bg_color, no 'rect' will be generated for this cell since
-    the default background is always displayed.
+    If consecutive cells have the same background color, a single 'rect' tag is
+    returned for all these cells.
+    If a cell background uses default_bg_color, no 'rect' will be generated for
+    this cell since the default background is always displayed.
 
     :param screen_line: Mapping between column numbers and CharacterCells
     :param height: Vertical position of the line on the screen in pixels
     :param cell_height: Height of the a character cell in pixels
     :param cell_width: Width of a character cell in pixels
     """
-    non_default_bg_cells = [(column, cell) for (column, cell) in sorted(screen_line.items())
+    non_default_bg_cells = [(column, cell) for (column, cell)
+                            in sorted(screen_line.items())
                             if cell.background_color != 'background']
 
     key = ConsecutiveWithSameAttributes(['background_color'])
@@ -394,8 +412,8 @@ def _make_text_tag(column, attributes, text, cell_width):
 def _render_characters(screen_line, cell_width):
     """Return a list of 'text' elements representing the line of the screen
 
-    Consecutive characters with the same styling attributes (text color, font weight...) are
-    grouped together in a single text element.
+    Consecutive characters with the same styling attributes (text color, font
+    weight...) are grouped together in a single text element.
 
     :param screen_line: Mapping between column numbers and characters
     :param cell_width: Width of a character cell in pixels
@@ -442,36 +460,41 @@ def resize_template(template, columns, rows, cell_width, cell_height):
     except etree.Error as exc:
         raise TemplateError('Invalid template') from exc
 
-    # Extract the screen geometry which is saved in a private data portion of the template
-    settings = root.find('.//{{{}}}defs/{{{}}}template_settings'.format(SVG_NS, TERMTOSVG_NS))
+    # Extract the screen geometry which is saved in a private data portion of
+    # the template
+    settings = root.find('.//{{{}}}defs/{{{}}}template_settings'
+                         .format(SVG_NS, TERMTOSVG_NS))
     if settings is None:
         raise TemplateError('Missing "template_settings" element in definitions')
 
-    geometry = settings.find('{{{}}}screen_geometry[@columns][@rows]'.format(TERMTOSVG_NS))
+    geometry = settings.find('{{{}}}screen_geometry[@columns][@rows]'
+                             .format(TERMTOSVG_NS))
     if geometry is None:
         raise TemplateError('Missing "screen_geometry" element in "template_settings"')
 
-    attributes_err_msg = ('Missing or invalid "columns" or "rows" attribute for element '
-                          '"screen_geometry": expected positive integers')
+    attributes_err_msg = ('Missing or invalid "columns" or "rows" attribute '
+                          'for element "screen_geometry": expected positive '
+                          'integers')
     try:
         template_columns = int(geometry.attrib['columns'])
         template_rows = int(geometry.attrib['rows'])
     except (KeyError, ValueError) as exc:
         raise TemplateError(attributes_err_msg) from exc
 
-    # Update settings with real columns and rows values to preserve the scale in case
-    # the animation serves as a template
+    # Update settings with real columns and rows values to preserve the scale
+    # in case the animation serves as a template
     geometry.attrib['columns'], geometry.attrib['rows'] = str(columns), str(rows)
 
     if template_rows <= 0 or template_columns <= 0:
         raise TemplateError(attributes_err_msg)
 
-    # Scale the viewBox of the root svg element based on the size of the screen and the size
-    # registered in the template
+    # Scale the viewBox of the root svg element based on the size of the screen
+    # and the size registered in the template
     scale(root, template_columns, template_rows, columns, rows)
 
     # Also scale the viewBox of the svg element with id 'screen'
-    screen = root.find('.//{{{namespace}}}svg[@id="screen"]'.format(namespace=SVG_NS))
+    screen = root.find('.//{{{namespace}}}svg[@id="screen"]'
+                       .format(namespace=SVG_NS))
     if screen is None:
         raise TemplateError('svg element with id "screen" not found')
     scale(screen, template_columns, template_rows, columns, rows)
@@ -492,13 +515,14 @@ def validate_template(name, templates):
 
 def _embed_css(root, animation_duration=None):
     try:
-        style = root.find('.//{{{namespace}}}defs/{{{namespace}}}style[@id="generated-style"]'
-                          .format(namespace=SVG_NS))
+        style = root.find('.//{{{ns}}}defs/{{{ns}}}style[@id="generated-style"]'
+                          .format(ns=SVG_NS))
     except etree.Error as exc:
         raise TemplateError('Invalid template') from exc
 
     if style is None:
-        raise TemplateError('Missing <style id="generated-style" ...> element in "defs"')
+        raise TemplateError('Missing <style id="generated-style" ...> element '
+                            'in "defs"')
 
     css_header = """:root {{
             --animation-duration: {animation_duration}ms;
@@ -545,4 +569,3 @@ def validate_svg(svg_file):
     if not is_valid:
         reason = dtd.error_log.filter_from_errors()[0]
         raise ValueError('Invalid SVG file: {}'.format(reason))
-
